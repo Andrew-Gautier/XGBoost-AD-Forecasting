@@ -3,7 +3,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import shap
-from scipy import stats
 from sklearn.metrics import (
     confusion_matrix,
     roc_curve,
@@ -139,6 +138,23 @@ def plot_feature_importance_axis(ax, importances, feature_names, top_n=50,
     return fi
 
 
+def bootstrap_mean_ci(values, ci=95, n_boot=2000, random_state=42):
+    """Percentile-bootstrap CI of the column means of ``values`` (n_obs, n_cols), resampling rows.
+
+    The bounds stay within the observed range of each column, so bounded quantities
+    (gain >= 0, missingness proportions in [0, 1]) get intervals that respect the bounds.
+    Returns ``(lo, hi)`` arrays of length n_cols.
+    """
+    V = np.asarray(values, dtype=float)
+    if V.ndim == 1:
+        V = V.reshape(-1, 1)
+    rng = np.random.default_rng(random_state)
+    n = V.shape[0]
+    boot = np.array([np.nanmean(V[rng.integers(0, n, n)], axis=0) for _ in range(n_boot)])
+    alpha = (100 - ci) / 2
+    return np.percentile(boot, alpha, axis=0), np.percentile(boot, 100 - alpha, axis=0)
+
+
 def plot_aggregate_feature_importance_axis(ax, importances_matrix, feature_names,
                                            top_n=50, ci=95, cmap='viridis',
                                            value_fontsize=7, label_fontsize=9,
@@ -157,16 +173,16 @@ def plot_aggregate_feature_importance_axis(ax, importances_matrix, feature_names
     top_n : int
         Number of top features to display (ranked by mean importance).
     ci : float, default 95
-        Confidence level for the ± interval / error bars (t-distribution across models).
+        Confidence level for the interval / error bars (percentile bootstrap across models).
     error_bars : bool, default False
         If True, draw the ``ci``% interval as error-bar whiskers and annotate the
-        mean only. If False, annotate ``mean ± interval`` as text after each bar.
+        mean only. If False, annotate ``mean (lo–hi)`` as text after each bar.
 
     Returns
     -------
     fi : pd.DataFrame
-        The top-``top_n`` features with columns ``Feature``, ``Mean``, ``Err``
-        (``Err`` = half-width of the ``ci``% confidence interval).
+        The top-``top_n`` features with columns ``Feature``, ``Mean``, ``CI_lo``,
+        ``CI_hi`` (bounds of the ``ci``% bootstrap confidence interval).
     """
     M = np.asarray(importances_matrix, dtype=float)
     if M.ndim == 1:
@@ -175,24 +191,18 @@ def plot_aggregate_feature_importance_axis(ax, importances_matrix, feature_names
     assert n_features == len(feature_names), (n_features, len(feature_names))
 
     means = M.mean(axis=0)
-    if n_models > 1:
-        sem = M.std(axis=0, ddof=1) / np.sqrt(n_models)
-        tcrit = stats.t.ppf((1 + ci / 100) / 2, df=n_models - 1)
-        err = tcrit * sem
-    else:
-        err = np.zeros(n_features)
+    lo, hi = bootstrap_mean_ci(M, ci=ci)
 
-    fi = pd.DataFrame({'Feature': list(feature_names), 'Mean': means, 'Err': err})
+    fi = pd.DataFrame({'Feature': list(feature_names), 'Mean': means, 'CI_lo': lo, 'CI_hi': hi})
     fi = fi.sort_values('Mean', ascending=True).tail(top_n)
 
     colors = plt.get_cmap(cmap)(np.linspace(0.15, 0.85, len(fi)))
     y = np.arange(len(fi))
     if error_bars:
-        # Gain importance is non-negative, so clamp the lower whisker at 0
-        # (a symmetric t-interval can dip below zero for high-variance features).
+        # Asymmetric whiskers from the bootstrap bounds (never below 0 for gain)
         mean_arr = fi['Mean'].to_numpy()
-        err_arr = fi['Err'].to_numpy()
-        xerr = np.vstack([np.minimum(err_arr, mean_arr), err_arr])
+        xerr = np.clip(np.vstack([mean_arr - fi['CI_lo'].to_numpy(),
+                                  fi['CI_hi'].to_numpy() - mean_arr]), 0, None)
         ax.barh(y, mean_arr, xerr=xerr, color=colors,
                 edgecolor='white', linewidth=0.3, capsize=2,
                 error_kw=dict(elinewidth=0.6, capthick=0.6))
@@ -203,12 +213,12 @@ def plot_aggregate_feature_importance_axis(ax, importances_matrix, feature_names
     ax.set_yticklabels(fi['Feature'], fontsize=tick_fontsize)
     max_imp = fi['Mean'].max()
     if error_bars:
-        for i, (val, e) in enumerate(zip(fi['Mean'], fi['Err'])):
-            ax.text(val + e + max_imp * 0.012, i, f'{val:.4f}',
+        for i, (val, h) in enumerate(zip(fi['Mean'], fi['CI_hi'])):
+            ax.text(max(val, h) + max_imp * 0.012, i, f'{val:.4f}',
                     va='center', ha='left', fontsize=value_fontsize)
     else:
-        for i, (val, e) in enumerate(zip(fi['Mean'], fi['Err'])):
-            ax.text(val + max_imp * 0.012, i, f'{val:.4f} ± {e:.4f}',
+        for i, (val, l, h) in enumerate(zip(fi['Mean'], fi['CI_lo'], fi['CI_hi'])):
+            ax.text(val + max_imp * 0.012, i, f'{val:.4f} ({l:.4f}–{h:.4f})',
                     va='center', ha='left', fontsize=value_fontsize)
     ax.set_xlabel('Importance (gain)', fontsize=label_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize)
