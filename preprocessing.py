@@ -447,6 +447,10 @@ _LONG_COLS = [
     'NACCLIVS', 'COMMUN', 'ALCOHOL'
 ]
 
+# Per-visit columns carried in the datasets (e.g. for the missingness analysis) but never
+# imputed or turned into model features; NACCMOCA feeds NACCMMSE via harmonize_mmse.
+_AUX_LONG_COLS = ['NACCMOCA']
+
 # Scalar columns — take the most-recent visit value
 _SCALAR_COLS = [
     'SEX', 'EDUC', 'NACCFAM',
@@ -454,6 +458,39 @@ _SCALAR_COLS = [
     'B12DEF', 'DEPD', 'ANX', 'NACCTBI', 'SMOKYRS', 'RACE', 'HISPANIC',
     'NACCNE4S',
 ]
+
+# Codes meaning "not collected at this visit", skipped when picking a scalar's most recent
+# value. UDS v3 follow-up visits code the A5 health history -4, which would otherwise
+# overwrite the value recorded at an earlier visit. 9 = unknown is a real answer for the
+# comorbidities and is kept (it recodes to absent).
+_SCALAR_NOT_COLLECTED = {'SMOKYRS': {-4, 888, 88, 99}, 'NACCNE4S': {-4, 9}}
+
+# Monsell et al. 2016 (NACC Crosswalk Study), Table 3: equivalent MMSE for each
+# education-adjusted MoCA score 0-30 (NACCMOCA).
+MOCA_TO_MMSE = [6, 9, 10, 11, 12, 12, 13, 14, 15, 15, 16, 17, 18, 19, 20, 21,
+                22, 23, 24, 25, 26, 27, 28, 28, 29, 29, 29, 30, 30, 30, 30]
+_MOCA_SENTINELS = {-4, 88, 99}
+
+
+def harmonize_mmse(mmse, moca):
+    """Fill visits without an MMSE with the MMSE equivalent of that visit's MoCA.
+
+    A recorded MMSE is never overwritten; visits with neither test stay missing.
+    """
+    if not isinstance(mmse, list) or not isinstance(moca, list) or len(mmse) != len(moca):
+        return mmse
+    return [float(MOCA_TO_MMSE[int(c)]) if np.isnan(m) and 0 <= c <= 30 else m
+            for m, c in zip(mmse, moca)]
+
+
+def _harmonize_mmse_column(df):
+    """Clean NACCMOCA sentinels and fold converted MoCA scores into NACCMMSE (in place)."""
+    if 'NACCMOCA' not in df.columns:
+        return df
+    df['NACCMOCA'] = df['NACCMOCA'].apply(lambda r: _clean_sentinel(r, _MOCA_SENTINELS))
+    if 'NACCMMSE' in df.columns:
+        df['NACCMMSE'] = [harmonize_mmse(m, c) for m, c in zip(df['NACCMMSE'], df['NACCMOCA'])]
+    return df
 
 # Numeric coding for label_visit string output → integer used in Progression
 _LABEL_INT = {'CN': 0, 'MCI': 1, 'AD': 2, 'Unknown': 3}
@@ -492,7 +529,7 @@ def build_subject_df(
     raw = raw.sort_values(['NACCID', 'NACCVNUM'])
 
     rules = CODINGS[coding_key]['rules']
-    long_present = [c for c in _LONG_COLS if c in raw.columns]
+    long_present = [c for c in _LONG_COLS + _AUX_LONG_COLS if c in raw.columns]
     scalar_present = [c for c in _SCALAR_COLS if c in raw.columns]
 
     rows = []
@@ -525,10 +562,11 @@ def build_subject_df(
         # Longitudinal columns — list of per-visit values
         long_vals = {col: grp[col].tolist() for col in long_present}
 
-        # Scalar columns — most recent non-null value
+        # Scalar columns — most recent value that was actually collected
         scalar_vals = {}
         for col in scalar_present:
             series = grp[col].dropna()
+            series = series[~series.isin(_SCALAR_NOT_COLLECTED.get(col, {-4}))]
             scalar_vals[col] = series.iloc[-1] if len(series) > 0 else np.nan
 
         row = {
@@ -681,7 +719,9 @@ _COMORBIDITY_COLS = [
 ]
 _STATIC_ROUND_COLS = ['TOBAC30', 'NACCLIVS', 'ALCOHOL',
                       'NACCNE4S', 'SEX', 'RACE', 'HISPANIC']
-_LONG_ROUND_COLS = ['TOBAC30', 'NACCLIVS', 'ALCOHOL'] + FAQ_COLS  # COMMUN snapped separately
+_LONG_ROUND_COLS = ['TOBAC30', 'ALCOHOL'] + FAQ_COLS  # COMMUN snapped separately
+# Nominal per-visit columns left missing by MICE (XGBoost handles NaN natively)
+_LONG_NO_IMPUTE_COLS = ['NACCLIVS']
 
 
 def clean_subject_df(df, min_age=50):
@@ -698,9 +738,9 @@ def clean_subject_df(df, min_age=50):
     """
     df = df.copy()
 
-    # SMOKYRS: 888 = "not assessed", -4 = "not available" -> NaN
+    # SMOKYRS: 888 = "not assessed", -4 = "not available", 88 = not applicable, 99 = unknown -> NaN
     if 'SMOKYRS' in df.columns:
-        df['SMOKYRS'] = df['SMOKYRS'].replace([-4, 888], np.nan)
+        df['SMOKYRS'] = df['SMOKYRS'].replace([-4, 88, 99, 888], np.nan)
 
     # NACCNE4S: 9 = missing/unknown -> NaN; nullable Int64 so values serialize as ints
     if 'NACCNE4S' in df.columns:
@@ -712,7 +752,7 @@ def clean_subject_df(df, min_age=50):
             df[col] = (df[col] == 1).astype(int)
 
     # Parse string-encoded list columns back into real lists (no-op for in-memory lists).
-    for col in _LONG_COLS:
+    for col in _LONG_COLS + _AUX_LONG_COLS:
         if col in df.columns:
             df[col] = df[col].apply(_parse_list_col)
 
@@ -733,6 +773,9 @@ def clean_subject_df(df, min_age=50):
     for col in FAQ_COLS + _HV_RAW:
         if col in df.columns:
             df[col] = df[col].apply(lambda r: _clean_sentinel(r, {-4, 9, 8}))
+
+    # UDS v3 replaced the MMSE with the MoCA: fill those visits with converted MoCA scores
+    _harmonize_mmse_column(df)
 
     # Age filter
     if min_age is not None:
@@ -828,7 +871,7 @@ def fit_imputer(df, random_state=42):
 
     static_cols = [c for c in _SCALAR_COLS
                    if c in df.columns and df[c].dtype.kind in 'iuf']
-    long_cols = [c for c in _LONG_COLS if c in df.columns]
+    long_cols = [c for c in _LONG_COLS if c in df.columns and c not in _LONG_NO_IMPUTE_COLS]
 
     # --- Static imputer ---
     static_imputer = None
@@ -961,9 +1004,9 @@ def run_pipeline(
               f"{subject_df['n_visits'].max()} visits)")
 
     # ── Clean scalar sentinel values ──────────────────────────────────────
-    # SMOKYRS: 888 = "not assessed", -4 = "not available" → NaN
+    # SMOKYRS: 888 = "not assessed", -4 = "not available", 88 = not applicable, 99 = unknown → NaN
     if 'SMOKYRS' in subject_df.columns:
-        subject_df['SMOKYRS'] = subject_df['SMOKYRS'].replace([-4, 888], np.nan)
+        subject_df['SMOKYRS'] = subject_df['SMOKYRS'].replace([-4, 88, 99, 888], np.nan)
 
     # NACCNE4S: 9 = missing/unknown → NaN; cast to nullable Int64 so values
     # serialize as integers (0, 1, 2) rather than floats (0.0, 1.0, 2.0)
@@ -1004,7 +1047,7 @@ def run_pipeline(
         # ── 1. Parse list-string columns & clean sentinels ───────────────
         # build_subject_df stores raw numeric values; sentinel codes must be
         # converted to NaN before any NaN-based filters or imputation below.
-        for col in _LONG_COLS:
+        for col in _LONG_COLS + _AUX_LONG_COLS:
             if col in df.columns:
                 df[col] = df[col].apply(_parse_list_col)
 
@@ -1023,6 +1066,7 @@ def run_pipeline(
         for col in HV_RAW:
             if col in df.columns:
                 df[col] = df[col].apply(lambda r: _clean_sentinel(r, {-4, 9, 8}))
+        _harmonize_mmse_column(df)  # converted MoCA fills UDS v3 visits without an MMSE
 
         # ── 2. Drop subjects below min_age ────────────────────────────────
         n0 = len(df)

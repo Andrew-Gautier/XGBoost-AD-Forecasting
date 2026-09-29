@@ -21,7 +21,7 @@ except ImportError:
     def tqdm(iterable, **kwargs):
         return iterable
 from preprocessing import create_target
-from feature_engineering import create_delta_features, preprocess_data
+from feature_engineering import create_delta_features, preprocess_data, CATEGORICAL_COLUMNS
 from scipy import stats
 
 
@@ -160,7 +160,14 @@ def bootstrap_all_metrics_ci(
 # Preprocess the data
 
 
-def _fit_xgb(X_tr, X_te, y_tr, params, n_jobs=None, scale=False, random_state=42):
+def _feature_types(feature_names):
+    """XGBoost feature types: 'c' (categorical) for CATEGORICAL_COLUMNS, 'q' (numeric) otherwise."""
+    if feature_names is None:
+        return None
+    return ['c' if name in CATEGORICAL_COLUMNS else 'q' for name in feature_names]
+
+
+def _fit_xgb(X_tr, X_te, y_tr, params, n_jobs=None, scale=False, random_state=42, feature_names=None):
     """Fit (optional scaler +) XGBoost on training data; return predictions on test data.
 
     Parameters
@@ -174,6 +181,9 @@ def _fit_xgb(X_tr, X_te, y_tr, params, n_jobs=None, scale=False, random_state=42
     Returns (model, imputer, scaler, y_pred, y_proba).
     imputer is always None (reserved for future re-addition).
     scaler  is None when scale=False.
+    feature_names : list of str, optional
+        Column names of X_tr; columns listed in CATEGORICAL_COLUMNS get native categorical
+        splits (numpy input carries no dtypes, so XGBoost needs explicit feature_types).
     """
     if scale:
         scaler = StandardScaler()
@@ -195,6 +205,7 @@ def _fit_xgb(X_tr, X_te, y_tr, params, n_jobs=None, scale=False, random_state=42
         eval_metric='auc',
         scale_pos_weight=spw,
         enable_categorical=True,
+        feature_types=_feature_types(feature_names),
         n_jobs=n_jobs,
         random_state=random_state,
         **xgb_kwargs,
@@ -248,7 +259,8 @@ def build_model_final(X_train, X_test, y_train, y_test, model_dict, feature_name
 
     from visualization import plot_shap_summary, plot_pr_curve
 
-    model, imputer, scaler, y_pred, y_proba = _fit_xgb(X_train, X_test, y_train, model_dict, random_state=random_state)
+    model, imputer, scaler, y_pred, y_proba = _fit_xgb(X_train, X_test, y_train, model_dict, random_state=random_state,
+                                                        feature_names=feature_names)
 
     print("Classification Report:")
     cr_str = classification_report(y_test, y_pred)
@@ -306,7 +318,8 @@ def build_model_final(X_train, X_test, y_train, y_test, model_dict, feature_name
 # To train models for cross-validation. Returns only a CV score. Does not print out anything.
 def build_model(X_train, X_test, y_train, y_test, model_dict, feature_names, xgb_n_jobs=None, objective_metric='auc'):
 
-    _, _, _, y_pred, y_proba = _fit_xgb(X_train, X_test, y_train, model_dict, n_jobs=xgb_n_jobs)
+    _, _, _, y_pred, y_proba = _fit_xgb(X_train, X_test, y_train, model_dict, n_jobs=xgb_n_jobs,
+                                        feature_names=feature_names)
     if objective_metric == 'avg_precision':
         return average_precision_score(y_test, y_proba)
     return roc_auc_score(y_test, y_proba)
@@ -454,8 +467,8 @@ def train_best_model(
             processed_test[col] = np.nan
     processed_test = processed_test[feature_names + ['target']]
 
-    X_train = processed_train.drop(columns=['target']).values
-    X_test = processed_test.drop(columns=['target']).values
+    X_train = processed_train.drop(columns=['target']).astype(float).to_numpy()
+    X_test = processed_test.drop(columns=['target']).astype(float).to_numpy()
     y_train = processed_train['target'].values
     y_test = processed_test['target'].values
 
@@ -552,8 +565,8 @@ def train_best_model_from_split(
             processed_test[col] = np.nan
     processed_test = processed_test[feature_names + ['target']]
 
-    X_train = processed_train.drop(columns=['target']).values
-    X_test = processed_test.drop(columns=['target']).values
+    X_train = processed_train.drop(columns=['target']).astype(float).to_numpy()
+    X_test = processed_test.drop(columns=['target']).astype(float).to_numpy()
     y_train = processed_train['target'].values
     y_test = processed_test['target'].values
 

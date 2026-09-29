@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -62,6 +63,122 @@ def recompute_run_feature_names(csv_path, progression_type, seed):
     train_feat['target'] = y
     processed, _, _ = preprocess_data(train_feat, progression_type)
     return [c for c in processed.columns if c != 'target']
+
+
+# ── Base-feature collapsing: group engineered per-visit stats under their root variable ──
+
+_INTERACTION_BASE_MAP = {
+    'hearing_vision_product': 'hearing_vision',
+    'hearing_vision_sum': 'hearing_vision',
+    'hearing_vision_mean': 'hearing_vision',
+}
+
+# Longest/most-specific suffix first so e.g. "_last_minus_first" isn't mis-stripped as "_first".
+_SUFFIXES_ORDERED = (
+    '_last_minus_first', '_interval_mean', '_interval_std', '_acceleration',
+    '_pct_change', '_std_slope', '_n_visits', '_lag1', '_lag2', '_lag3', '_changed',
+    '_first', '_last', '_mean', '_max', '_min', '_std', '_range', '_slope',
+)
+
+
+def get_base_feature_name(name):
+    """Map an engineered feature name to its root variable (e.g. 'TOBAC30_slope' -> 'TOBAC30').
+
+    Static features with no matching suffix (e.g. 'age', 'HISPANIC') are returned unchanged.
+    """
+    if name in _INTERACTION_BASE_MAP:
+        return _INTERACTION_BASE_MAP[name]
+    for suffix in _SUFFIXES_ORDERED:
+        if name.endswith(suffix):
+            return name[:-len(suffix)]
+    return name
+
+
+def _group_columns_by_base(feature_names):
+    """Return {base_name: [column indices]}, in first-appearance order."""
+    groups = {}
+    for i, name in enumerate(feature_names):
+        groups.setdefault(get_base_feature_name(name), []).append(i)
+    return groups
+
+
+def total_gain_importance(model):
+    """Each feature's share of the model's total gain (summed over every split on it); sums to 1.
+
+    XGBoost's default feature_importances_ is the average gain per split, which is not additive:
+    summed over a variable's derived features it grows with their number. Total gain is additive,
+    so collapse_importance_matrix gives each variable's true share of the loss reduction.
+    """
+    imp = np.zeros(model.n_features_in_)
+    for key, value in model.get_booster().get_score(importance_type='total_gain').items():
+        imp[int(key[1:])] = value  # models are fit on numpy arrays, so keys are 'f0', 'f1', ...
+    return imp / imp.sum()
+
+
+def collapse_importance_matrix(importances_matrix, feature_names):
+    """Sum per-model importances across engineered columns that share a root variable.
+
+    Parameters
+    ----------
+    importances_matrix : array-like, shape (n_models, n_features)
+    feature_names : list[str]
+
+    Returns
+    -------
+    base_names : list[str]
+    collapsed : np.ndarray, shape (n_models, n_base_features)
+    """
+    M = np.asarray(importances_matrix, dtype=float)
+    if M.ndim == 1:
+        M = M.reshape(1, -1)
+    groups = _group_columns_by_base(feature_names)
+    base_names = list(groups.keys())
+    collapsed = np.stack([M[:, idx].sum(axis=1) for idx in groups.values()], axis=1)
+    return base_names, collapsed
+
+
+def collapse_shap_for_beeswarm(shap_values, X, feature_names):
+    """Sum SHAP values across engineered columns that share a root variable.
+
+    The dot-color value per sample is the |SHAP|-weighted average of that group's
+    per-column min-max-normalized values (falls back to a plain mean when all
+    weights are 0) — an approximation that favors whichever sub-feature actually
+    drove the SHAP value for that sample.
+
+    Returns
+    -------
+    base_names : list[str]
+    collapsed_shap : np.ndarray, shape (n_samples, n_base_features)
+    collapsed_color : np.ndarray, shape (n_samples, n_base_features)
+    """
+    sv = np.asarray(shap_values, dtype=float)
+    X = np.asarray(X, dtype=float)
+    groups = _group_columns_by_base(feature_names)
+    base_names = list(groups.keys())
+    n_samples = sv.shape[0]
+
+    collapsed_shap = np.zeros((n_samples, len(base_names)))
+    collapsed_color = np.zeros((n_samples, len(base_names)))
+    for g, idx in enumerate(groups.values()):
+        collapsed_shap[:, g] = sv[:, idx].sum(axis=1)
+
+        cols = X[:, idx]
+        vmin = np.nanmin(cols, axis=0)
+        vmax = np.nanmax(cols, axis=0)
+        span = np.where(vmax - vmin < 1e-12, 1.0, vmax - vmin)
+        norm_cols = (cols - vmin) / span
+
+        weights = np.abs(sv[:, idx])
+        weight_sum = weights.sum(axis=1)
+        safe_sum = np.where(weight_sum > 0, weight_sum, 1.0)
+        weighted_color = np.nansum(weights * norm_cols, axis=1) / safe_sum
+        with warnings.catch_warnings():
+            # All-NaN rows (no valid value anywhere in the group) legitimately yield NaN.
+            warnings.filterwarnings('ignore', message='Mean of empty slice')
+            fallback = np.nanmean(norm_cols, axis=1)
+        collapsed_color[:, g] = np.where(weight_sum > 0, weighted_color, fallback)
+
+    return base_names, collapsed_shap, collapsed_color
 
 
 def plot_feature_importance(importances, feature_names, top_n=50, title=None, save_path=None,
@@ -220,7 +337,7 @@ def plot_aggregate_feature_importance_axis(ax, importances_matrix, feature_names
         for i, (val, l, h) in enumerate(zip(fi['Mean'], fi['CI_lo'], fi['CI_hi'])):
             ax.text(val + max_imp * 0.012, i, f'{val:.4f} ({l:.4f}–{h:.4f})',
                     va='center', ha='left', fontsize=value_fontsize)
-    ax.set_xlabel('Importance (gain)', fontsize=label_fontsize)
+    ax.set_xlabel('Share of total gain', fontsize=label_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize)
     ax.spines[['top', 'right']].set_visible(False)
     ax.grid(axis='x', alpha=0.3, linestyle='--')
@@ -419,11 +536,13 @@ def _swarm_offsets(x, spread=0.38, n_bins=100, seed=0):
 def plot_shap_beeswarm(ax, shap_values, X, feature_names, top_n=50,
                        cmap='coolwarm', dot_size=5, alpha=0.85,
                        xlabel="SHAP value (impact on model output)",
-                       label_fontsize=9, tick_fontsize=8):
+                       label_fontsize=9, tick_fontsize=8, feature_order=None):
     """Publication-quality horizontal SHAP beeswarm on a provided axis.
 
-    Ranks features by mean |SHAP| and shows the top ``top_n``. Each dot is a
-    sample, coloured by that sample's feature value (blue = low, red = high).
+    Ranks features by mean |SHAP| and shows the top ``top_n``, unless
+    ``feature_order`` (a list of names) fixes the row order, e.g. to keep rows
+    aligned across several charts. Each dot is a sample, coloured by that
+    sample's feature value (blue = low, red = high).
     The standalone ``plot_shap_summary`` remains unchanged for compatibility.
     """
     shap_values = np.asarray(shap_values, dtype=float)
@@ -431,7 +550,10 @@ def plot_shap_beeswarm(ax, shap_values, X, feature_names, top_n=50,
     feature_names = list(feature_names)
 
     mean_abs = np.abs(shap_values).mean(axis=0)
-    order = np.argsort(mean_abs)[::-1][:top_n]
+    if feature_order is None:
+        order = np.argsort(mean_abs)[::-1][:top_n]
+    else:
+        order = np.array([feature_names.index(f) for f in feature_order][:top_n])
 
     cmap_obj = plt.get_cmap(cmap)
     for row, feat_idx in enumerate(order):

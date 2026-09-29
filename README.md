@@ -8,7 +8,7 @@ Early prediction of Alzheimer's disease (AD) progression from longitudinal clini
 
 ## Overview
 
-This repository implements a machine-learning pipeline that predicts progression along the Alzheimer's disease continuum from longitudinal, structured clinical data collected through the National Alzheimer's Coordinating Center (NACC) Uniform Data Set (UDS v3).
+This repository implements a machine-learning pipeline that predicts progression along the Alzheimer's disease continuum from longitudinal, structured clinical data collected through the National Alzheimer's Coordinating Center (NACC) Uniform Data Set (UDS versions 1–3).
 
 Two binary classifiers are trained:
 
@@ -31,7 +31,7 @@ Key components:
 
 | File | Description |
 |------|-------------|
-| `preprocessing.py` | Raw NACC investigator CSV → one-row-per-subject datasets (`run_pipeline`, `build_subject_df`), sentinel cleaning, hearing/vision composites, and leak-free MICE imputation (`fit_imputer` / `transform_imputer`). |
+| `preprocessing.py` | Raw NACC investigator CSV → one-row-per-subject datasets (`run_pipeline`, `build_subject_df`), sentinel cleaning, conversion of MoCA scores to the MMSE scale at UDS v3 visits without an MMSE (`harmonize_mmse`), hearing/vision composites, and leak-free MICE imputation (`fit_imputer` / `transform_imputer`). |
 | `feature_engineering.py` | Visit-agnostic feature engineering (`create_delta_features`) and feature selection (`preprocess_data`). |
 | `model.py` | XGBoost training with Optuna search (`train_best_model`, `train_best_model_from_split`) and bootstrap-CI reporting. |
 | `leadtime.py` | Lead-time evaluation (`run_leadtime`, `analyze_run`, `run_grid`). |
@@ -125,4 +125,4 @@ The data are available to qualified researchers upon request directly from NACC.
 **Dataset Specification:** 
 
 * **Data Freeze / Version:** December 2025 Data Freeze
-* **NACC Forms Used:** Uniform Data Set (UDS) v3, Neuropathology (NP) Form
+* **NACC Forms Used:** Uniform Data Set (UDS) versions 1–3, Neuropathology (NP) Form

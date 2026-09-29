@@ -43,7 +43,7 @@ _LONG_COLS = [
 def eval_if_str(x):
     """If x is a string containing a Python literal, evaluate it."""
     if isinstance(x, str):
-        return eval(x)
+        return eval(x, {'nan': np.nan})  # CSV-stringified lists contain bare 'nan'
     return x
 
 
@@ -128,7 +128,7 @@ def transform(row, progression_type, mask_length=0):
     df = pd.DataFrame(out)
     df = create_delta_features(df)
     df, _, _ = preprocess_data(df, progression_type)
-    return num_trunc, df.drop(columns=['target'])
+    return num_trunc, df.drop(columns=['target']).astype(float)  # float matrix, as in model.py
 
 
 # -----------------------------------------------------------------------------
@@ -162,8 +162,8 @@ def run_leadtime(file_path, dest_dir, model, progression_type, mask_length=0, im
     os.makedirs(dest_dir, exist_ok=True)
     csv = pd.read_csv(file_path)
 
-    # --- Optional leak-free preprocessing -------------------------------------------------
-    # The leak-free lead-time CSV is stored in the RAW schema (raw hearing/vision columns,
+    # --- Optional step for imputed datasets preprocessing -------------------------------------------------
+    # The lead-time CSV is stored in the RAW schema (raw hearing/vision columns,
     # sentinel-cleaned but NOT imputed). Parse the raw list columns, then either apply the
     # train-fitted imputer, or just build the hearing/vision composites (non-imputed path).
     raw_hv_present = any(c in csv.columns for c in ('HEARING', 'VISION'))

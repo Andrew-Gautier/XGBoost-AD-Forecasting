@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import linregress
-from preprocessing import create_target
+from preprocessing import create_target, _AUX_LONG_COLS
 
 
 # Initially 40 columns from preprocessing
@@ -18,7 +18,11 @@ BINARY_COLUMNS = ['NACCFAM',
 
 NUMERIC_COLUMNS = ['EDUC', 'SMOKYRS', 'age']  
 
-CATEGORICAL_COLUMNS = ['SEX', 'RACE', 'NACCNE4S']  
+CATEGORICAL_COLUMNS = ['SEX', 'RACE', 'NACCNE4S', 'NACCLIVS_first', 'NACCLIVS_last']
+
+# Nominal per-visit columns: first/last code (categorical) and whether it ever changed,
+# instead of arithmetic summaries that assume an order among the codes
+NOMINAL_LONGITUDINAL_COLUMNS = ['NACCLIVS']  
 
 # 37 features in the end: 17 static + 20 longitudinal
 def preprocess_data(df, progression_type):
@@ -47,6 +51,7 @@ def preprocess_data(df, progression_type):
     # Hearing × Vision interaction features (named explicitly — not reliably caught by suffixes)
     _INTERACTION_FEATURES = ['hearing_vision_product', 'hearing_vision_sum', 'hearing_vision_mean']
     interaction_features = [f for f in _INTERACTION_FEATURES if f in df.columns]
+    interaction_features += [f"{c}_changed" for c in NOMINAL_LONGITUDINAL_COLUMNS if f"{c}_changed" in df.columns]
 
     # Exclude interaction features from the suffix scan to avoid duplicates
     # (e.g. 'hearing_vision_mean' matches '_mean' but is already in interaction_features)
@@ -339,7 +344,19 @@ def create_delta_features(df):
     df = df.copy()
     new_columns = {}
 
+    # Auxiliary per-visit columns (e.g. NACCMOCA, already folded into NACCMMSE) are not features
+    df = df.drop(columns=[c for c in _AUX_LONG_COLS if c in df.columns])
+
     _parse_array_columns(df)
+
+    # ── Nominal columns: categorical first/last code and a 'changed' flag ────
+    for col in NOMINAL_LONGITUDINAL_COLUMNS:
+        if col in df.columns and _is_numeric_list_col(df[col]):
+            new_columns[f"{col}_first"] = df[col].apply(_first_valid)
+            new_columns[f"{col}_last"] = df[col].apply(_last_valid)
+            new_columns[f"{col}_changed"] = df[col].apply(
+                lambda x: float(len(set(np.asarray(x)[~np.isnan(x)])) > 1) if _has_valid(x) else np.nan)
+            df = df.drop(columns=[col])
 
     # ── ALCOHOL severity recode ───────────────────────────────────────────────
     # Raw NACC coding:  0=Absent, 1=Recent/Active, 2=Remote/Inactive
