@@ -1,15 +1,17 @@
+import contextlib
 import warnings
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
 import shap
 from sklearn.metrics import (
-    confusion_matrix,
-    roc_curve,
-    roc_auc_score,
-    precision_recall_curve,
     average_precision_score,
+    confusion_matrix,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
 )
 
 
@@ -22,18 +24,14 @@ def get_model_feature_names(model, X):
     """
     X = np.asarray(X)
     n_features = X.shape[1]
-    try:
+    with contextlib.suppress(Exception):
         fn = list(model.feature_names_in_)
         if len(fn) == n_features:
             return fn
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         fn = model.get_booster().feature_names
         if fn and len(fn) == n_features:
             return list(fn)
-    except Exception:
-        pass
     return [f"f{i}" for i in range(n_features)]
 
 
@@ -46,8 +44,9 @@ def recompute_run_feature_names(csv_path, progression_type, seed):
     was fit on a numpy array).
     """
     from sklearn.model_selection import train_test_split
-    from preprocessing import create_target
+
     from feature_engineering import create_delta_features, preprocess_data
+    from preprocessing import create_target
 
     dataset = pd.read_csv(csv_path)
     dataset['target'] = dataset['Progression'].apply(
@@ -212,7 +211,7 @@ def plot_feature_importance(importances, feature_names, top_n=50, title=None, sa
     fi = pd.DataFrame({'Feature': feature_names, 'Importance': importances})
     fi = fi.sort_values('Importance', ascending=True).tail(top_n)
 
-    fig, ax = plt.subplots(figsize=(10, max(5, top_n * 0.35)))
+    _fig, ax = plt.subplots(figsize=(10, max(5, top_n * 0.35)))
     colors = plt.cm.viridis(np.linspace(0.25, 0.85, len(fi)))
     ax.barh(fi['Feature'], fi['Importance'], color=colors, edgecolor='white', linewidth=0.5)
     for i, (val, name) in enumerate(zip(fi['Importance'], fi['Feature'])):
@@ -304,7 +303,7 @@ def plot_aggregate_feature_importance_axis(ax, importances_matrix, feature_names
     M = np.asarray(importances_matrix, dtype=float)
     if M.ndim == 1:
         M = M.reshape(1, -1)
-    n_models, n_features = M.shape
+    _n_models, n_features = M.shape
     assert n_features == len(feature_names), (n_features, len(feature_names))
 
     means = M.mean(axis=0)
@@ -322,7 +321,7 @@ def plot_aggregate_feature_importance_axis(ax, importances_matrix, feature_names
                                   fi['CI_hi'].to_numpy() - mean_arr]), 0, None)
         ax.barh(y, mean_arr, xerr=xerr, color=colors,
                 edgecolor='white', linewidth=0.3, capsize=2,
-                error_kw=dict(elinewidth=0.6, capthick=0.6))
+                error_kw={"elinewidth": 0.6, "capthick": 0.6})
     else:
         ax.barh(y, fi['Mean'], color=colors,
                 edgecolor='white', linewidth=0.3)
@@ -362,7 +361,7 @@ def plot_confusion_mat(y_true, y_pred, class_labels=None, title=None, save_path=
     if class_labels is None:
         class_labels = [str(c) for c in sorted(np.unique(y_true))]
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    _fig, ax = plt.subplots(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_labels,
                 yticklabels=class_labels, linewidths=0.5, linecolor='gray',
                 cbar_kws={'shrink': 0.8}, ax=ax)
@@ -392,7 +391,7 @@ def plot_roc(y_true, y_proba, title=None, save_path=None):
     fpr, tpr, _ = roc_curve(y_true, y_proba)
     auc_val = roc_auc_score(y_true, y_proba)
 
-    fig, ax = plt.subplots(figsize=(7, 6))
+    _fig, ax = plt.subplots(figsize=(7, 6))
     ax.plot(fpr, tpr, color='#2E86AB', lw=2.5, label=f'ROC curve (AUC = {auc_val:.3f})')
     ax.plot([0, 1], [0, 1], 'k--', lw=1, alpha=0.5, label='Random classifier')
     ax.fill_between(fpr, tpr, alpha=0.15, color='#2E86AB')
@@ -430,7 +429,7 @@ def plot_pr_curve(y_true, y_proba, title=None, save_path=None):
     ap = average_precision_score(y_true, y_proba)
     baseline = np.mean(y_true)
 
-    fig, ax = plt.subplots(figsize=(7, 6))
+    _fig, ax = plt.subplots(figsize=(7, 6))
     ax.plot(recall, precision, color='#E84855', lw=2.5, label=f'PR curve (AP = {ap:.3f})')
     ax.axhline(baseline, color='k', linestyle='--', lw=1, alpha=0.5, label=f'Random classifier (AP = {baseline:.3f})')
     ax.fill_between(recall, precision, alpha=0.15, color='#E84855')
@@ -624,7 +623,7 @@ def plot_aggregate_roc(y_true_list, y_proba_list, label, color='#2E86AB',
     upper = np.percentile(tprs, 100 - (100 - ci) / 2, axis=0)
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(7, 6))
+        _fig, ax = plt.subplots(figsize=(7, 6))
 
     ax.plot(fpr_grid, mean_tpr, color=color, lw=2.5,
             label=f'{label} (AUC = {mean_auc:.3f} ± {std_auc:.3f})')
@@ -675,7 +674,7 @@ def plot_aggregate_pr(y_true_list, y_proba_list, label, color='#E84855',
     std_ap = np.std(ap_scores, ddof=1)
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(7, 6))
+        _fig, ax = plt.subplots(figsize=(7, 6))
 
     ax.plot(recall_grid, mean_prec, color=color, lw=2.5,
             label=f'{label} (AP = {mean_ap:.3f} ± {std_ap:.3f})')

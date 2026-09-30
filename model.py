@@ -1,29 +1,36 @@
-import pandas as pd
+import contextlib
+import os
+
+import joblib
 import numpy as np
-from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.preprocessing import StandardScaler
+import optuna
+import pandas as pd
 from sklearn.metrics import (
-    classification_report,
-    roc_auc_score,
-    average_precision_score,
     accuracy_score,
+    average_precision_score,
+    classification_report,
+    f1_score,
     precision_score,
     recall_score,
-    f1_score,
+    roc_auc_score,
 )
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
-import os
-import joblib
-import optuna
+
 try:
     from tqdm import tqdm
 except ImportError:
     def tqdm(iterable, **kwargs):
         return iterable
-from preprocessing import create_target
-from feature_engineering import create_delta_features, preprocess_data, CATEGORICAL_COLUMNS
 from scipy import stats
 
+from feature_engineering import (
+    CATEGORICAL_COLUMNS,
+    create_delta_features,
+    preprocess_data,
+)
+from preprocessing import create_target
 
 # XGBoost hyperparameter keys that optuna_search / _fit_xgb understand
 _XGB_HPARAM_KEYS = {
@@ -257,7 +264,7 @@ def _write_bootstrap_ci(f, bm):
 # For the training of the best model with the best set of hyperparameters, prints out the whole performance report.
 def build_model_final(X_train, X_test, y_train, y_test, model_dict, feature_names, charts_dir=None, random_state=42):
 
-    from visualization import plot_shap_summary, plot_pr_curve
+    from visualization import plot_pr_curve, plot_shap_summary
 
     model, imputer, scaler, y_pred, y_proba = _fit_xgb(X_train, X_test, y_train, model_dict, random_state=random_state,
                                                         feature_names=feature_names)
@@ -318,7 +325,7 @@ def build_model_final(X_train, X_test, y_train, y_test, model_dict, feature_name
 # To train models for cross-validation. Returns only a CV score. Does not print out anything.
 def build_model(X_train, X_test, y_train, y_test, model_dict, feature_names, xgb_n_jobs=None, objective_metric='auc'):
 
-    _, _, _, y_pred, y_proba = _fit_xgb(X_train, X_test, y_train, model_dict, n_jobs=xgb_n_jobs,
+    _, _, _, _y_pred, y_proba = _fit_xgb(X_train, X_test, y_train, model_dict, n_jobs=xgb_n_jobs,
                                         feature_names=feature_names)
     if objective_metric == 'avg_precision':
         return average_precision_score(y_test, y_proba)
@@ -485,10 +492,8 @@ def train_best_model(
         charts_dir=charts_dir, random_state=random_state
     )
 
-    try:
+    with contextlib.suppress(Exception):
         model.feature_names_in_ = np.array(columns)
-    except Exception:
-        pass
 
     if save_artifacts:
         os.makedirs(save_dir, exist_ok=True)
@@ -514,8 +519,7 @@ def train_best_model(
             f.write(f"n_trials: {n_trials}\n")
             f.write(f"Random state: {random_state}\n")
             f.write("Best hyperparameters:\n")
-            for k, v in model_dict.items():
-                f.write(f"  {k}: {v}\n")
+            f.writelines(f"  {k}: {v}\n" for k, v in model_dict.items())
             f.write("\nClassification Report:\n")
             f.write(summary["classification_report"] + "\n")
             f.write(f"\nBase ROC AUC: {summary['base_auc']:.4f}\n")
@@ -581,10 +585,8 @@ def train_best_model_from_split(
         charts_dir=charts_dir, random_state=random_state
     )
 
-    try:
+    with contextlib.suppress(Exception):
         model.feature_names_in_ = np.array(columns)
-    except Exception:
-        pass
 
     if save_artifacts:
         os.makedirs(save_dir, exist_ok=True)
@@ -610,8 +612,7 @@ def train_best_model_from_split(
             f.write(f"n_trials: {n_trials}\n")
             f.write(f"Random state: {random_state}\n")
             f.write("Best hyperparameters:\n")
-            for k, v in model_dict.items():
-                f.write(f"  {k}: {v}\n")
+            f.writelines(f"  {k}: {v}\n" for k, v in model_dict.items())
             f.write("\nClassification Report:\n")
             f.write(summary["classification_report"] + "\n")
             f.write(f"\nBase ROC AUC: {summary['base_auc']:.4f}\n")

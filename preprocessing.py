@@ -1,12 +1,12 @@
-import pandas as pd
-import numpy as np
 import ast
-import os
 import json
-from sklearn.experimental import enable_iterative_imputer
+import os
+
+import numpy as np
+import pandas as pd
+from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer
 from sklearn.linear_model import BayesianRidge
-
 
 # Clinical bounds for imputation (min, max)
 BOUNDS = {
@@ -234,8 +234,8 @@ def create_hv(df):
             print("Cannot create hearing/vision: Missing HEARING HEARAID HEARWAID, VISION VISCORR VISWCORR")
             return df
     
-    hearing=list()
-    vision=list()
+    hearing=[]
+    vision=[]
     for a, row in df.iterrows():
         for var in ['HEARING', 'HEARAID', 'HEARWAID', 'VISION', 'VISCORR', 'VISWCORR']:
             if isinstance(row[var], str):
@@ -243,8 +243,8 @@ def create_hv(df):
                 row[var] = eval(row[var])
         
         # timepoint vectors for each sample
-        h=list()
-        v=list()
+        h=[]
+        v=[]
 
         for i in range(len(row['HEARING'])):
             # classify hearing
@@ -257,9 +257,7 @@ def create_hv(df):
                 # abnormal hearing without aid, check if aid helps
                 if np.isnan(row['HEARAID'][i]):
                     # unknown aid presence
-                    if np.isnan(row['HEARWAID'][i]):
-                        h.append(2)
-                    elif row['HEARWAID'][i]==0:
+                    if np.isnan(row['HEARWAID'][i]) or row['HEARWAID'][i]==0:
                         h.append(2)
                     else: 
                         h.append(1)
@@ -268,9 +266,7 @@ def create_hv(df):
                     h.append(2)
                 else: 
                     # has aid, check if helps
-                    if np.isnan(row['HEARWAID'][i]):
-                        h.append(2)
-                    elif row['HEARWAID'][i]==0:
+                    if np.isnan(row['HEARWAID'][i]) or row['HEARWAID'][i]==0:
                         h.append(2)
                     else: 
                         h.append(1)
@@ -285,9 +281,7 @@ def create_hv(df):
                 # abnormal vision without aid, check if aid helps
                 if np.isnan(row['VISCORR'][i]):
                     # unknown aid presence
-                    if np.isnan(row['VISWCORR'][i]):
-                        v.append(2)
-                    elif row['VISWCORR'][i]==0:
+                    if np.isnan(row['VISWCORR'][i]) or row['VISWCORR'][i]==0:
                         v.append(2)
                     else: 
                         v.append(1)
@@ -296,9 +290,7 @@ def create_hv(df):
                     v.append(2)
                 else: 
                     # has aid, check if helps
-                    if np.isnan(row['VISWCORR'][i]):
-                        v.append(2)
-                    elif row['VISWCORR'][i]==0:
+                    if np.isnan(row['VISWCORR'][i]) or row['VISWCORR'][i]==0:
                         v.append(2)
                     else: 
                         v.append(1)
@@ -420,7 +412,7 @@ def longitudinal_impute(df, long_cols, bounds, random_state=42):
             lo, hi = bounds[col]
             # Clip each element in each list
             df[col] = df[col].apply(
-                lambda lst: [float(np.clip(x, lo, hi)) for x in lst] if isinstance(lst, list) else lst
+                lambda lst, lo=lo, hi=hi: [float(np.clip(x, lo, hi)) for x in lst] if isinstance(lst, list) else lst
             )
             # Round categorical/ordinal variables
             if col == 'COMMUN':
@@ -499,7 +491,7 @@ _LABEL_INT = {'CN': 0, 'MCI': 1, 'AD': 2, 'Unknown': 3}
 def build_subject_df(
     source_csv: str,
     min_visits: int = 2,
-    max_visits: int = None,
+    max_visits: int | None = None,
     coding_key: str = 'standard',
 ) -> pd.DataFrame:
     """
@@ -846,7 +838,7 @@ def _clip_round_long(df, cols):
         if col in BOUNDS:
             lo, hi = BOUNDS[col]
             df[col] = df[col].apply(
-                lambda lst: [float(np.clip(x, lo, hi)) for x in lst]
+                lambda lst, lo=lo, hi=hi: [float(np.clip(x, lo, hi)) for x in lst]
                 if isinstance(lst, list) else lst
             )
             if col == 'COMMUN':
@@ -945,7 +937,7 @@ def run_pipeline(
     source_csv: str,
     dest_dir: str = "Dataset_output",
     min_visits: int = 2,
-    max_visits: int = None,
+    max_visits: int | None = None,
     min_age: int = 50,
     lead_time_pct: float = 0.05,
     random_state: int = 42,

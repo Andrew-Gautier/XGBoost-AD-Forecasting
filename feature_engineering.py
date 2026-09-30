@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import linregress
-from preprocessing import create_target, _AUX_LONG_COLS
 
+from preprocessing import _AUX_LONG_COLS, create_target
 
 # Initially 40 columns from preprocessing
 
